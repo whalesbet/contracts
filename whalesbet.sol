@@ -64,7 +64,7 @@ abstract contract ReentrancyGuard {
 
 contract whalesbet is usingProvable,ReentrancyGuard {
     
-    address contractCreator = 0xACE119Ae0C17bD7C8C9963f897153c52528923Cc;
+    address contractCreator = ;
       
     fallback() external payable{}
     receive() external payable{}
