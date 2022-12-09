@@ -66,6 +66,7 @@ contract whalesbet is usingProvable,ReentrancyGuard {
     
     address contractCreator = ;
       
+       
     fallback() external payable{}
     receive() external payable{}
 
@@ -81,8 +82,8 @@ contract whalesbet is usingProvable,ReentrancyGuard {
     
     uint256 betsNumber;
 
-    // There's a 0.00001 BTC fixed commission transferred to the contract's creator for every placed bet
-    uint256 public fixedCommission = 10000000000000;
+    // There's a 0.0001 BTC fixed commission transferred to the contract's creator for every placed bet
+    uint256 public fixedCommission = 100000000000000;
     
     // Minimum entry for all bets, bet creators cannot set it lower than this 
     uint256 public minimumBet = fixedCommission * 2;
@@ -99,6 +100,9 @@ contract whalesbet is usingProvable,ReentrancyGuard {
     // Keep track of all owners to handle commission fees
     mapping(string => address payable) public betOwners; 
     mapping(string => uint256) public betCommissions;
+
+    // Keep Track of bonus pools of each bet pool based on time of the bet
+    mapping(string => uint256) public bonusPool;
     
     // For each bet, how much each has each user put into that bet's pool?
     mapping(string => mapping(address => uint256)) public userPools;
@@ -224,8 +228,12 @@ contract whalesbet is usingProvable,ReentrancyGuard {
             && !finishedBets[betId] 
             && betDeadlines[betId] >= block.timestamp,
         "Unable to place bets, check arguments.");
+
+        uint256 timeRelation = (1000 - ((block.timestamp - betCreationTime[betId])*1000) / (betDeadlines[betId] - betCreationTime[betId]));
         
         uint256 total = msg.value;
+        uint256 userBet;
+
         for (uint i = 0; i < results.length; i++) {
         
             /* More than one bet can be placed at the same time, 
@@ -244,12 +252,34 @@ contract whalesbet is usingProvable,ReentrancyGuard {
             
             bet -= fixedCommission;
             
+            if( timeRelation < 250 ){
+                
+                // Late Bet penalty of 10% of bet amount that goes as bonus to early bets
+
+                userBet = bet*900/1000;
+                bonusPool[betId] += bet*100/1000;
+            
+            } else if (timeRelation >= 250 && timeRelation <= 750){
+                
+                // Medium Bet penalty of 5% of bet amount that goes as bonus to early bets
+
+                userBet = bet*950/1000;
+                bonusPool[betId] += bet*50/1000;
+
+            } else{
+
+                // Early Birds Bet
+
+                userBet = bet;
+
+            }
+
             // Update all required state
-            resultPools[betId][toLower(results[i])] += bet;
-            userPools[betId][msg.sender] += bet;
+            resultPools[betId][toLower(results[i])] += userBet;
+            userPools[betId][msg.sender] += userBet;
             lastBetTimePools[betId][toLower(results[i])][msg.sender] = block.timestamp;
             betPools[betId] += bet;
-            userBets[betId][msg.sender][toLower(results[i])] += bet;
+            userBets[betId][msg.sender][toLower(results[i])] += userBet;
         }
         
         // Fixed commission transfer
@@ -287,32 +317,50 @@ contract whalesbet is usingProvable,ReentrancyGuard {
 
     }
     
-    function getEarnEstimation(string calldata betId, uint256 amount,string memory result,uint256 timestamp) public view returns(uint256) {
+    function getEarnEstimation(string calldata betId, uint256 amount, string calldata result, uint256 timestamp,bool predict) public view returns(uint256) {
 
-            uint256 timeRelation = 1000 - ((timestamp - betCreationTime[betId])*1000) / (betDeadlines[betId] - betCreationTime[betId]);
 
-            // How much did everyone pool into this result?
-            uint256 winnerPool = resultPools[betId][result] + amount;
-            
-            uint256 loserPool = betPools[betId] - winnerPool;
+            uint256 timeRelation = (1000 - ((timestamp - betCreationTime[betId])*1000) / (betDeadlines[betId] - betCreationTime[betId]));
 
+            uint256 betAmount;
+
+            uint256 winnerPool;
+            uint256 loserPool;
             uint256 reward;
-
+            
             if( timeRelation < 250 ){
 
-                reward = (loserPool / (winnerPool / amount) + amount)*90/100;
+                betAmount = amount*900/1000;
             
-            } else if (timeRelation >= 250 && timeRelation <= 850){
+            } else if (timeRelation >= 250 && timeRelation <= 750){
 
-                reward = (loserPool / (winnerPool / amount) + amount)*95/100;
+                betAmount = amount*950/1000;
 
-            } else if (timeRelation > 850){
+            } else{
 
-                reward = loserPool / (winnerPool / amount) + amount;
+                betAmount = amount;
 
             }
 
-        return reward;
+            if(predict == true){
+                // How much did everyone pool into this result?
+                winnerPool = resultPools[betId][result] + betAmount;
+                
+                loserPool = (betPools[betId] + amount) - winnerPool;
+
+            } else{
+                // How much did everyone pool into this result?
+                winnerPool = resultPools[betId][result];
+                
+                loserPool = betPools[betId] - winnerPool;
+
+            }
+
+
+            reward = loserPool / (winnerPool / betAmount) + betAmount;
+
+            
+            return reward;
 
     }
 
@@ -343,51 +391,29 @@ contract whalesbet is usingProvable,ReentrancyGuard {
         
         uint256 reward;
         
-        // If no one won then all bets are refunded
+        // If no one won then all bets are refunded and bonus pool goes 50% to the house and 50% to bet creator
         if (winnerPool == 0) {
             emit UnwonBet(msg.sender);
             reward = userPools[betId][msg.sender];
-        } else if (userBet != 0) {
-            // User won the bet and receives their corresponding share of the loser's pool
-            uint256 loserPool = betPools[betId] - winnerPool;
-            
-            
-            uint256 timeRelation = 1000 - ((betTimestamp - betCreationTime[betId])*1000) / (betDeadlines[betId] - betCreationTime[betId]);
-            
-            if( timeRelation < 250 ){
-                
-                // Late Bet
 
-                // User gets their corresponding fraction of the loser's pool, along with their original bet
-                reward = (loserPool / (winnerPool / userBet) + userBet)*90/100;
-                
-                uint256 fee = (loserPool / (winnerPool / userBet) + userBet)*10/100;
-
-                (bool successFee,) = contractCreator.call{value: fee}("");
+            if(bonusPool[betId] > 0){
+            
+                (bool successFee,) = contractCreator.call{value: bonusPool[betId]*500/1000}("");
                 require(successFee, "Failed to transfer commission to whales bet.");
-
-            
-            } else if (timeRelation >= 250 && timeRelation <= 850){
-
-                // Middle Bet
-
-                // User gets their corresponding fraction of the loser's pool, along with their original bet
-                reward = (loserPool / (winnerPool / userBet) + userBet)*95/100;
-
-                uint256 fee = (loserPool / (winnerPool / userBet) + userBet)*5/100;
-
-                (bool successFee,) = contractCreator.call{value: fee}("");
-                require(successFee, "Failed to transfer commission to whales bet.");
-
-            } else if (timeRelation > 850){
-
-                // Early Birds Bet
-
-                // User gets their corresponding fraction of the loser's pool, along with their original bet
-                reward = loserPool / (winnerPool / userBet) + userBet;
+                (successFee,) = betOwners[betId].call{value: bonusPool[betId]*500/1000}("");
+                require(successFee, "Failed to transfer commission to bet creator.");
+               
+                bonusPool[betId] = 0;
 
             }
 
+        } else if (userBet != 0) {
+            // User won the bet and receives their corresponding share of the loser's pool
+            uint256 loserPool = betPools[betId] - winnerPool;
+              
+            // User gets their corresponding fraction of the loser's pool, along with their original bet
+            reward = loserPool / (winnerPool / userBet) + userBet;
+         
             emit WonBet(msg.sender, reward);
 
         } else {
